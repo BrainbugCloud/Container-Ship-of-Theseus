@@ -1,0 +1,187 @@
+name: Rusternetes Conformance
+
+on:
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: Test mode
+        type: choice
+        default: quick
+        options:
+          - quick
+          - full
+
+# Bump versions together:
+#   K8S_VERSION   → sonobuoy --kubernetes-version
+#   SONOBUOY_VER  → sonobuoy CLI + container image
+
+jobs:
+  build:
+    name: Build rusternetes
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - name: Checkout rusternetes
+        uses: actions/checkout@v4
+        with:
+          repository: BrainbugCloud/rusternetes
+          ref: main
+
+      - name: Clone rhino adjacent
+        run: git clone --depth 1 https://github.com/calfonso/rhino.git ../rhino
+
+      - name: Install Rust toolchain
+        run: |
+          rustup update --no-self-update stable
+          rustup default stable
+
+      - name: Install protoc
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y protobuf-compiler
+
+      - name: Cache cargo registry + target
+        uses: Swatinem/rust-cache@v2
+        with:
+          prefix-key: "v1-rust-conformance"
+
+      - name: Build all-in-one binary
+        run: cargo build --release --locked -p rusternetes --features sqlite
+
+      - name: Upload binary artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: rusternetes-binary
+          path: target/release/rusternetes
+          retention-days: 1
+
+  conformance:
+    name: Rusternetes (${{ inputs.mode }}) K8s v1.36.1
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: ${{ inputs.mode == 'quick' && 45 || 300 }}
+    env:
+      K8S_VERSION: v1.36.1
+      SONOBUOY_VER: v0.57.5
+      KUBELET_VOLUMES_PATH: ${{ github.workspace }}/.rusternetes/volumes
+      CONTAINER_RUNTIME: podman
+
+    steps:
+      - name: Checkout rusternetes
+        uses: actions/checkout@v4
+        with:
+          repository: BrainbugCloud/rusternetes
+          ref: main
+
+      - name: Download binary
+        uses: actions/download-artifact@v4
+        with:
+          name: rusternetes-binary
+          path: target/release/
+
+      - name: Make binary executable
+        run: chmod +x target/release/rusternetes
+
+      - name: Install podman + tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y podman podman-compose crictl
+          # podman socket for bollard (Docker API compat)
+          sudo systemctl enable --now podman.socket
+          # Verify socket is accessible
+          sudo chmod 666 /run/podman/podman.sock 2>/dev/null || true
+          curl --unix-socket /run/podman/podman.sock http://localhost/_ping || true
+
+      - name: Install kubectl
+        run: |
+          curl -sSL "https://dl.k8s.io/release/$(curl -sSL https://dl.k8s.io/release/stable.txt)/bin/linux/amd64/kubectl" \
+            | sudo tee /usr/local/bin/kubectl > /dev/null
+          sudo chmod +x /usr/local/bin/kubectl
+
+      - name: Install Sonobuoy
+        run: |
+          curl -sSL "https://github.com/vmware-tanzu/sonobuoy/releases/download/${SONOBUOY_VER}/sonobuoy_${SONOBUOY_VER#v}_linux_amd64.tar.gz" | sudo tar xz -C /usr/local/bin sonobuoy
+          sonobuoy version --short
+
+      - name: Create network + generate certs
+        run: |
+          podman network create rusternetes-network 2>/dev/null || true
+          bash scripts/generate-certs.sh
+
+      - name: Start rusternetes cluster
+        run: |
+          export KUBELET_VOLUMES_PATH=${{ github.workspace }}/.rusternetes/volumes
+          mkdir -p "$KUBELET_VOLUMES_PATH"
+          podman compose -f compose.yml up -d --build
+
+      - name: Wait for API server
+        run: |
+          for i in $(seq 1 60); do
+            code=$(curl -sk -o /dev/null -w '%{http_code}' https://127.0.0.1:6443/healthz || echo 000)
+            [ "$code" = "200" ] && break
+            echo "Waiting for API server... ($i/60) status=$code"
+            sleep 2
+          done
+          [ "$code" = "200" ] || { echo "API server never became healthy"; exit 1; }
+
+      - name: Bootstrap cluster
+        run: |
+          bash scripts/bootstrap-cluster.sh podman
+          kubectl --insecure-skip-tls-verify --server https://127.0.0.1:6443 get nodes
+          kubectl --insecure-skip-tls-verify --server https://127.0.0.1:6443 get pods -A
+
+      - name: Run Sonobuoy (${{ inputs.mode }})
+        env:
+          SONOBUOY_MODE: ${{ inputs.mode == 'quick' && 'quick' || 'certified-conformance' }}
+          WAIT_MINUTES: ${{ inputs.mode == 'quick' && '20' || '240' }}
+        run: |
+          export KUBECONFIG=/dev/null
+          K='kubectl --insecure-skip-tls-verify --server https://127.0.0.1:6443 --token dummy'
+          $K create ns sonobuoy 2>/dev/null || true; sleep 2
+          sonobuoy run \
+            --mode="$SONOBUOY_MODE" \
+            --kubernetes-version="$K8S_VERSION" \
+            --sonobuoy-image=sonobuoy/sonobuoy:${SONOBUOY_VER} \
+            --wait="$WAIT_MINUTES" \
+            --plugin-env=e2e.E2E_USE_GO_RUNNER=false
+
+      - name: Collect results
+        if: always()
+        run: |
+          export KUBECONFIG=/dev/null
+          sonobuoy status || true
+          sonobuoy logs > sonobuoy-logs.txt 2>&1 || echo "No logs" > sonobuoy-logs.txt
+          sonobuoy retrieve -f results.tar.gz || true
+          if [ -f results.tar.gz ]; then
+            sonobuoy results results.tar.gz || true
+          fi
+
+      - name: Collect cluster logs
+        if: always()
+        run: |
+          podman compose -f compose.yml logs > cluster-logs.txt 2>&1 || true
+          podman ps -a >> cluster-logs.txt 2>&1 || true
+
+      - name: Upload results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: rusternetes-smoke-results
+          path: |
+            results.tar.gz
+            sonobuoy-logs.txt
+          retention-days: 7
+
+      - name: Upload cluster logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: rusternetes-cluster-logs
+          path: cluster-logs.txt
+          retention-days: 7
+
+      - name: Cleanup
+        if: always()
+        run: |
+          podman compose -f compose.yml down -v 2>/dev/null || true
+          podman network rm rusternetes-network 2>/dev/null || true
