@@ -1,0 +1,108 @@
+name: Kind Conformance
+
+on:
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: Test mode
+        type: choice
+        default: quick
+        options:
+          - quick
+          - full
+
+# Bump both versions together:
+#   K8S_VERSION   → kindest/node image tag
+#   SONOBUOY_VER  → sonobuoy CLI + container image
+
+jobs:
+  sonobuoy:
+    name: Sonobuoy (${{ inputs.mode }}) K8s v1.36.1
+    runs-on: ubuntu-latest
+    # GH-hosted runners are slow; full conformance needs well over 2h of headroom.
+    timeout-minutes: ${{ inputs.mode == 'quick' && 30 || 240 }}
+    env:
+      K8S_VERSION: v1.36.1
+      SONOBUOY_VER: v0.57.5
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Write kind config
+        run: |
+          cat <<'EOF' > /tmp/kind-config.yaml
+          kind: Cluster
+          apiVersion: kind.x-k8s.io/v1alpha4
+          nodes:
+            - role: control-plane
+            - role: worker
+            - role: worker
+          EOF
+
+      - name: Create kind cluster (K8s v1.36.1)
+        uses: helm/kind-action@v1
+        with:
+          version: v0.26.0
+          node_image: kindest/node:v1.36.1
+          cluster_name: sonobuoy-test
+          wait: 120s
+          config: /tmp/kind-config.yaml
+
+      - name: Verify cluster
+        run: |
+          kubectl cluster-info
+          kubectl get nodes -o wide
+
+      - name: Install Sonobuoy
+        run: |
+          curl -sSL "https://github.com/vmware-tanzu/sonobuoy/releases/download/${SONOBUOY_VER}/sonobuoy_${SONOBUOY_VER#v}_linux_amd64.tar.gz" | sudo tar xz -C /usr/local/bin sonobuoy
+          sonobuoy version --short
+
+      - name: Run Sonobuoy (${{ inputs.mode }})
+        env:
+          SONOBUOY_MODE: ${{ inputs.mode == 'quick' && 'quick' || 'certified-conformance' }}
+          WAIT_MINUTES: ${{ inputs.mode == 'quick' && '20' || '200' }}
+        run: |
+          sonobuoy run \
+            --mode="${SONOBUOY_MODE}" \
+            --sonobuoy-image=sonobuoy/sonobuoy:${SONOBUOY_VER} \
+            --wait="${WAIT_MINUTES}" \
+            --plugin-env=e2e.E2E_USE_GO_RUNNER=false
+
+      - name: Collect Sonobuoy logs
+        if: always()
+        run: |
+          sonobuoy logs > sonobuoy-logs.txt 2>&1 || echo "Failed to collect logs" > sonobuoy-logs.txt
+
+      - name: Retrieve results
+        if: always()
+        run: |
+          sonobuoy status
+          sonobuoy retrieve -f results.tar.gz || true
+
+      - name: Print results summary
+        if: always()
+        run: |
+          if [ -f results.tar.gz ]; then
+            sonobuoy results results.tar.gz
+          else
+            echo "No results archive found"
+            sonobuoy logs
+          fi
+
+      - name: Upload results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: sonobuoy-results
+          path: results.tar.gz
+          retention-days: 30
+
+      - name: Upload logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: sonobuoy-logs
+          path: sonobuoy-logs.txt
+          retention-days: 30

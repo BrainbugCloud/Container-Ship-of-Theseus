@@ -1,0 +1,111 @@
+name: Kinder Conformance
+
+on:
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: Test mode
+        type: choice
+        default: quick
+        options:
+          - quick
+          - full
+
+# Bump both versions together:
+#   K8S_VERSION   → kindest/node image tag
+#   SONOBUOY_VER  → sonobuoy CLI + container image
+
+jobs:
+  kinder:
+    name: Kinder (${{ inputs.mode }}) K8s v1.36.1
+    runs-on: ubuntu-latest
+    # GH-hosted runners are slow; full conformance needs well over 2h of headroom.
+    timeout-minutes: ${{ inputs.mode == 'quick' && 30 || 240 }}
+    env:
+      K8S_VERSION: v1.36.1
+      SONOBUOY_VER: v0.57.5
+      CLUSTER_NAME: sonobuoy-test
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: "1.24"
+
+      - name: Build kinder
+        run: |
+          git clone --depth 1 https://github.com/kubernetes/kubeadm.git /tmp/kubeadm
+          cd /tmp/kubeadm/kinder
+          GO111MODULE=on go build -o /usr/local/bin/kinder .
+          kinder version
+
+      - name: Create cluster (kinder)
+        run: |
+          kinder create cluster \
+            --image "kindest/node:${K8S_VERSION}" \
+            --worker-nodes 2 \
+            --name "${CLUSTER_NAME}" \
+            --loglevel debug
+
+      - name: Bootstrap cluster
+        run: |
+          kinder do kubeadm-init --name "${CLUSTER_NAME}"
+          kinder do kubeadm-join --name "${CLUSTER_NAME}"
+          # Get kubeconfig via kinder
+          KCONFIG=$(kinder get kubeconfig-path --name="${CLUSTER_NAME}")
+          cp "$KCONFIG" /tmp/kubeconfig
+          chmod 600 /tmp/kubeconfig
+
+      - name: Verify cluster
+        run: |
+          export KUBECONFIG=/tmp/kubeconfig
+          kubectl cluster-info
+          kubectl get nodes -o wide
+
+      - name: Install Sonobuoy
+        run: |
+          curl -sSL "https://github.com/vmware-tanzu/sonobuoy/releases/download/${SONOBUOY_VER}/sonobuoy_${SONOBUOY_VER#v}_linux_amd64.tar.gz" | sudo tar xz -C /usr/local/bin sonobuoy
+          sonobuoy version --short
+
+      - name: Run Sonobuoy (${{ inputs.mode }})
+        env:
+          SONOBUOY_MODE: ${{ inputs.mode == 'quick' && 'quick' || 'certified-conformance' }}
+          WAIT_MINUTES: ${{ inputs.mode == 'quick' && '20' || '200' }}
+        run: |
+          export KUBECONFIG=/tmp/kubeconfig
+          sonobuoy run --mode "${SONOBUOY_MODE}" --wait="${WAIT_MINUTES}"
+
+      - name: Collect results
+        if: always()
+        run: |
+          export KUBECONFIG=/tmp/kubeconfig
+          sonobuoy status || true
+          sonobuoy retrieve -f results.tar.gz || true
+          sonobuoy logs > sonobuoy-logs.txt 2>&1 || echo "No logs" > sonobuoy-logs.txt
+
+      - name: Upload artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: kinder-smoke-results
+          path: |
+            results.tar.gz
+            sonobuoy-logs.txt
+          retention-days: 7
+
+      - name: Export kinder logs
+        if: always()
+        run: |
+          export KUBECONFIG=/tmp/kubeconfig
+          kinder export logs --name "${CLUSTER_NAME}" /tmp/kinder-logs || true
+
+      - name: Upload kinder logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: kinder-cluster-logs
+          path: /tmp/kinder-logs/
+          retention-days: 7
