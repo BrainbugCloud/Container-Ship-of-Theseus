@@ -1,0 +1,3 @@
+[submodule "rusternetes"]
+	path = rusternetes
+	url = https://github.com/BrainbugCloud/rusternetes.git

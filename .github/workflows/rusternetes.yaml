@@ -21,14 +21,13 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 60
     steps:
-      - name: Checkout rusternetes
+      - name: Checkout (with rusternetes submodule)
         uses: actions/checkout@v4
         with:
-          repository: BrainbugCloud/rusternetes
-          ref: main
+          submodules: true
 
-      - name: Clone rhino adjacent
-        run: git clone --depth 1 https://github.com/calfonso/rhino.git ../rhino
+      - name: Clone rhino adjacent to rusternetes
+        run: git clone --depth 1 https://github.com/calfonso/rhino.git rusternetes/../rhino
 
       - name: Install Rust toolchain
         run: |
@@ -46,13 +45,13 @@ jobs:
           prefix-key: "v1-rust-conformance"
 
       - name: Build all-in-one binary
-        run: cargo build --release --locked -p rusternetes --features sqlite
+        run: cd rusternetes && cargo build --release --locked -p rusternetes --features sqlite
 
       - name: Upload binary artifact
         uses: actions/upload-artifact@v4
         with:
           name: rusternetes-binary
-          path: target/release/rusternetes
+          path: rusternetes/target/release/rusternetes
           retention-days: 1
 
   conformance:
@@ -63,24 +62,23 @@ jobs:
     env:
       K8S_VERSION: v1.36.1
       SONOBUOY_VER: v0.57.5
-      KUBELET_VOLUMES_PATH: ${{ github.workspace }}/.rusternetes/volumes
+      KUBELET_VOLUMES_PATH: ${{ github.workspace }}/rusternetes/.rusternetes/volumes
       CONTAINER_RUNTIME: podman
 
     steps:
-      - name: Checkout rusternetes
+      - name: Checkout (with rusternetes submodule)
         uses: actions/checkout@v4
         with:
-          repository: BrainbugCloud/rusternetes
-          ref: main
+          submodules: true
 
       - name: Download binary
         uses: actions/download-artifact@v4
         with:
           name: rusternetes-binary
-          path: target/release/
+          path: rusternetes/target/release/
 
       - name: Make binary executable
-        run: chmod +x target/release/rusternetes
+        run: chmod +x rusternetes/target/release/rusternetes
 
       - name: Install podman + tools
         run: |
@@ -106,13 +104,13 @@ jobs:
       - name: Create network + generate certs
         run: |
           podman network create rusternetes-network 2>/dev/null || true
-          bash scripts/generate-certs.sh
+          cd rusternetes && bash scripts/generate-certs.sh
 
       - name: Start rusternetes cluster
         run: |
-          export KUBELET_VOLUMES_PATH=${{ github.workspace }}/.rusternetes/volumes
+          export KUBELET_VOLUMES_PATH=${{ github.workspace }}/rusternetes/.rusternetes/volumes
           mkdir -p "$KUBELET_VOLUMES_PATH"
-          podman compose -f compose.yml up -d --build
+          cd rusternetes && podman compose -f compose.yml up -d --build
 
       - name: Wait for API server
         run: |
@@ -126,7 +124,7 @@ jobs:
 
       - name: Bootstrap cluster
         run: |
-          bash scripts/bootstrap-cluster.sh podman
+          cd rusternetes && bash scripts/bootstrap-cluster.sh podman
           kubectl --insecure-skip-tls-verify --server https://127.0.0.1:6443 get nodes
           kubectl --insecure-skip-tls-verify --server https://127.0.0.1:6443 get pods -A
 
@@ -159,8 +157,8 @@ jobs:
       - name: Collect cluster logs
         if: always()
         run: |
-          podman compose -f compose.yml logs > cluster-logs.txt 2>&1 || true
-          podman ps -a >> cluster-logs.txt 2>&1 || true
+          cd rusternetes && podman compose -f compose.yml logs > ../cluster-logs.txt 2>&1 || true
+          podman ps -a >> ../cluster-logs.txt 2>&1 || true
 
       - name: Upload results
         if: always()
@@ -183,5 +181,5 @@ jobs:
       - name: Cleanup
         if: always()
         run: |
-          podman compose -f compose.yml down -v 2>/dev/null || true
+          cd rusternetes && podman compose -f compose.yml down -v 2>/dev/null || true
           podman network rm rusternetes-network 2>/dev/null || true
