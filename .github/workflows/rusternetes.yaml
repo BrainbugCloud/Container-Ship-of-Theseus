@@ -197,14 +197,26 @@ jobs:
           sudo -E podman compose -f compose.yml up -d
 
       - name: Wait for API server
+        timeout-minutes: 5
         run: |
           for i in $(seq 1 60); do
-            code=$(curl -sk -o /dev/null -w '%{http_code}' https://127.0.0.1:6443/healthz || echo 000)
+            # --max-time is critical: without it, a stalled TLS handshake can
+            # hang curl indefinitely, silently turning this 2-minute retry
+            # loop into an hour-long hang that only ends when the job's
+            # overall timeout-minutes kills it (as happened in practice).
+            code=$(curl -sk --max-time 3 -o /dev/null -w '%{http_code}' https://127.0.0.1:6443/healthz || echo 000)
             [ "$code" = "200" ] && break
             echo "Waiting for API server... ($i/60) status=$code"
             sleep 2
           done
-          [ "$code" = "200" ] || { echo "API server never became healthy"; exit 1; }
+          if [ "$code" != "200" ]; then
+            echo "API server never became healthy"
+            echo "=== podman ps -a ==="
+            sudo podman ps -a || true
+            echo "=== rusternetes-api-server logs ==="
+            sudo podman logs rusternetes-api-server 2>&1 || true
+            exit 1
+          fi
 
       - name: Bootstrap cluster
         run: |
