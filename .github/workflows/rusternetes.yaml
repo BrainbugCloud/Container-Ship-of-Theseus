@@ -115,8 +115,17 @@ jobs:
           printf '[Socket]\nSocketMode=0666\n' | sudo tee /etc/systemd/system/podman.socket.d/override.conf
           sudo systemctl daemon-reload
           sudo systemctl enable --now podman.socket
-          # Verify socket is accessible
-          curl --unix-socket /run/podman/podman.sock http://localhost/_ping
+          # Debug: show socket status and file
+          echo "=== systemctl status podman.socket ==="
+          sudo systemctl status podman.socket --no-pager || true
+          echo "=== /run/podman/ contents ==="
+          ls -la /run/podman/ 2>&1 || true
+          echo "=== socket file info ==="
+          stat /run/podman/podman.sock 2>&1 || true
+          # Verify socket works with podman CLI (not curl — curl gives misleading
+          # "port 80" errors when the unix socket is missing)
+          echo "=== podman info via socket ==="
+          podman --url unix:///run/podman/podman.sock info 2>&1 | head -20 || true
 
       - name: Install kubectl
         run: |
