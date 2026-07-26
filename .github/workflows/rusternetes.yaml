@@ -19,7 +19,9 @@ jobs:
   build:
     name: Build rusternetes
     runs-on: ubuntu-latest
-    timeout-minutes: 60
+    timeout-minutes: 90
+    env:
+      DOCKER_HOST: unix:///run/podman/podman.sock
     steps:
       - name: Checkout (with rusternetes submodule)
         uses: actions/checkout@v4
@@ -29,44 +31,52 @@ jobs:
       - name: Clone rhino adjacent to rusternetes
         run: git clone --depth 1 https://github.com/calfonso/rhino.git rusternetes/../rhino
 
-      - name: Install Rust toolchain
-        run: |
-          rustup update --no-self-update stable
-          rustup default stable
-
-      - name: Install protoc
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y protobuf-compiler
-
       - name: Get rusternetes submodule SHA
         id: submodule-sha
         run: echo "sha=$(git -C rusternetes rev-parse HEAD)" >> "$GITHUB_OUTPUT"
 
-      - name: Cache cargo registry + target
-        uses: Swatinem/rust-cache@v2
-        with:
-          prefix-key: "v1-rust-conformance"
+      - name: Install podman
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y podman podman-compose
+          # Rootful podman socket — required for privileged kubelet containers
+          sudo mkdir -p /etc/systemd/system/podman.socket.d
+          printf '[Socket]\nSocketMode=0666\n' | sudo tee /etc/systemd/system/podman.socket.d/override.conf
+          sudo systemctl daemon-reload
+          sudo systemctl enable --now podman.socket
 
-      - name: Cache built binary by submodule SHA
-        id: binary-cache
+      - name: Cache container images by submodule SHA
+        id: image-cache
         uses: actions/cache@v4
         with:
-          path: rusternetes/target/release/rusternetes
-          # Cache hit whenever the rusternetes submodule SHA hasn't changed
-          key: rusternetes-binary-${{ runner.os }}-${{ steps.submodule-sha.outputs.sha }}
+          path: /tmp/rusternetes-images.tar
+          key: rusternetes-images-${{ runner.os }}-${{ steps.submodule-sha.outputs.sha }}
           restore-keys: |
-            rusternetes-binary-${{ runner.os }}-
+            rusternetes-images-${{ runner.os }}-
 
-      - name: Build all-in-one binary
-        if: steps.binary-cache.outputs.cache-hit != 'true'
-        run: cd rusternetes && cargo build --release --locked -p rusternetes --features sqlite
+      - name: Build container images
+        if: steps.image-cache.outputs.cache-hit != 'true'
+        working-directory: rusternetes
+        run: |
+          export KUBELET_VOLUMES_PATH=${{ github.workspace }}/rusternetes/.rusternetes/volumes
+          mkdir -p "$KUBELET_VOLUMES_PATH"
+          sudo -E podman compose -f compose.yml build
 
-      - name: Upload binary artifact
+      - name: Save container images to tarball
+        if: steps.image-cache.outputs.cache-hit != 'true'
+        run: |
+          # Save all rusternetes-* images plus the etcd base image
+          images=$(sudo podman images --format '{{.Repository}}:{{.Tag}}' | grep -E '^rusternetes-|^quay.io/coreos/etcd' || true)
+          echo "Saving images: $images"
+          sudo podman save -o /tmp/rusternetes-images.tar $images
+          sudo chmod 644 /tmp/rusternetes-images.tar
+          ls -lh /tmp/rusternetes-images.tar
+
+      - name: Upload images artifact
         uses: actions/upload-artifact@v4
         with:
-          name: rusternetes-binary
-          path: rusternetes/target/release/rusternetes
+          name: rusternetes-images
+          path: /tmp/rusternetes-images.tar
           retention-days: 1
 
   conformance:
@@ -89,14 +99,16 @@ jobs:
         with:
           submodules: true
 
-      - name: Download binary
+      - name: Download container images
         uses: actions/download-artifact@v4
         with:
-          name: rusternetes-binary
-          path: rusternetes/target/release/
+          name: rusternetes-images
+          path: /tmp/
 
-      - name: Make binary executable
-        run: chmod +x rusternetes/target/release/rusternetes
+      - name: Load container images
+        run: |
+          sudo podman load -i /tmp/rusternetes-images.tar
+          sudo podman images | grep rusternetes
 
       - name: Install podman + tools
         env:
@@ -148,9 +160,8 @@ jobs:
         run: |
           export KUBELET_VOLUMES_PATH=${{ github.workspace }}/rusternetes/.rusternetes/volumes
           mkdir -p "$KUBELET_VOLUMES_PATH"
-          # Run as root: /run/podman/ is root-only on GHA runners, and
-          # kubelets need rootful podman for privileged containers anyway
-          sudo -E podman compose -f compose.yml up -d --build
+          # Images pre-built in build job — no --build needed
+          sudo -E podman compose -f compose.yml up -d
 
       - name: Wait for API server
         run: |
