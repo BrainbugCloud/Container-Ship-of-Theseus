@@ -109,10 +109,14 @@ jobs:
             | sudo tar xz -C /usr/local/bin crictl
           crictl --version
           # podman socket for bollard (Docker API compat)
+          # Use a systemd drop-in so the socket is world-accessible — chmod after
+          # systemctl start races with socket activation and gets reset.
+          sudo mkdir -p /etc/systemd/system/podman.socket.d
+          printf '[Socket]\nSocketMode=0666\n' | sudo tee /etc/systemd/system/podman.socket.d/override.conf
+          sudo systemctl daemon-reload
           sudo systemctl enable --now podman.socket
           # Verify socket is accessible
-          sudo chmod 666 /run/podman/podman.sock 2>/dev/null || true
-          curl --unix-socket /run/podman/podman.sock http://localhost/_ping || true
+          curl --unix-socket /run/podman/podman.sock http://localhost/_ping
 
       - name: Install kubectl
         run: |
