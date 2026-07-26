@@ -19,7 +19,7 @@ jobs:
   build:
     name: Build rusternetes
     runs-on: ubuntu-latest
-    timeout-minutes: 90
+    timeout-minutes: 120
     env:
       DOCKER_HOST: unix:///run/podman/podman.sock
     steps:
@@ -83,7 +83,7 @@ jobs:
     name: Rusternetes (${{ inputs.mode }}) K8s v1.36.1
     needs: build
     runs-on: ubuntu-latest
-    timeout-minutes: ${{ inputs.mode == 'quick' && 45 || 300 }}
+    timeout-minutes: ${{ inputs.mode == 'quick' && 60 || 360 }}
     env:
       K8S_VERSION: v1.36.1
       SONOBUOY_VER: v0.57.5
