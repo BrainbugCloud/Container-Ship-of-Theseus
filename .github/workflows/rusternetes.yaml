@@ -81,9 +81,15 @@ jobs:
         run: chmod +x rusternetes/target/release/rusternetes
 
       - name: Install podman + tools
+        env:
+          CRICTL_VER: v1.36.0
         run: |
           sudo apt-get update
-          sudo apt-get install -y podman podman-compose crictl
+          sudo apt-get install -y podman podman-compose
+          # crictl is not in Ubuntu apt repos — install from cri-tools GitHub release
+          curl -sSL "https://github.com/kubernetes-sigs/cri-tools/releases/download/${CRICTL_VER}/crictl-${CRICTL_VER}-linux-amd64.tar.gz" \
+            | sudo tar xz -C /usr/local/bin crictl
+          crictl --version
           # podman socket for bollard (Docker API compat)
           sudo systemctl enable --now podman.socket
           # Verify socket is accessible
