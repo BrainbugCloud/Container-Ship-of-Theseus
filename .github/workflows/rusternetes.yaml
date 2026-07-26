@@ -144,10 +144,13 @@ jobs:
           cd rusternetes && bash scripts/generate-certs.sh
 
       - name: Start rusternetes cluster
+        working-directory: rusternetes
         run: |
           export KUBELET_VOLUMES_PATH=${{ github.workspace }}/rusternetes/.rusternetes/volumes
           mkdir -p "$KUBELET_VOLUMES_PATH"
-          cd rusternetes && podman compose -f compose.yml up -d --build
+          # Run as root: /run/podman/ is root-only on GHA runners, and
+          # kubelets need rootful podman for privileged containers anyway
+          sudo -E podman compose -f compose.yml up -d --build
 
       - name: Wait for API server
         run: |
@@ -193,9 +196,10 @@ jobs:
 
       - name: Collect cluster logs
         if: always()
+        working-directory: rusternetes
         run: |
-          cd rusternetes && podman compose -f compose.yml logs > ../cluster-logs.txt 2>&1 || true
-          podman ps -a >> ../cluster-logs.txt 2>&1 || true
+          sudo podman compose -f compose.yml logs > ../cluster-logs.txt 2>&1 || true
+          sudo podman ps -a >> ../cluster-logs.txt 2>&1 || true
 
       - name: Upload results
         if: always()
@@ -217,6 +221,7 @@ jobs:
 
       - name: Cleanup
         if: always()
+        working-directory: rusternetes
         run: |
-          cd rusternetes && podman compose -f compose.yml down -v 2>/dev/null || true
-          podman network rm rusternetes-network 2>/dev/null || true
+          sudo podman compose -f compose.yml down -v 2>/dev/null || true
+          sudo podman network rm rusternetes-network 2>/dev/null || true
