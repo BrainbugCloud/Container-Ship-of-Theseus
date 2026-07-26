@@ -39,12 +39,27 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y protobuf-compiler
 
+      - name: Get rusternetes submodule SHA
+        id: submodule-sha
+        run: echo "sha=$(git -C rusternetes rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+
       - name: Cache cargo registry + target
         uses: Swatinem/rust-cache@v2
         with:
           prefix-key: "v1-rust-conformance"
 
+      - name: Cache built binary by submodule SHA
+        id: binary-cache
+        uses: actions/cache@v4
+        with:
+          path: rusternetes/target/release/rusternetes
+          # Cache hit whenever the rusternetes submodule SHA hasn't changed
+          key: rusternetes-binary-${{ runner.os }}-${{ steps.submodule-sha.outputs.sha }}
+          restore-keys: |
+            rusternetes-binary-${{ runner.os }}-
+
       - name: Build all-in-one binary
+        if: steps.binary-cache.outputs.cache-hit != 'true'
         run: cd rusternetes && cargo build --release --locked -p rusternetes --features sqlite
 
       - name: Upload binary artifact
