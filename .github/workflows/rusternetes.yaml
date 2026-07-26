@@ -112,7 +112,7 @@ jobs:
           # Use a systemd drop-in so the socket is world-accessible — chmod after
           # systemctl start races with socket activation and gets reset.
           sudo mkdir -p /etc/systemd/system/podman.socket.d
-          printf '[Socket]\nSocketMode=0666\n' | sudo tee /etc/systemd/system/podman.socket.d/override.conf
+          printf '[Socket]\nSocketMode=0666\nDirectoryMode=0777\n' | sudo tee /etc/systemd/system/podman.socket.d/override.conf
           sudo systemctl daemon-reload
           sudo systemctl enable --now podman.socket
           # Debug: show socket status and file
