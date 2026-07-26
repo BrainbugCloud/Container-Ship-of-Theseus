@@ -64,6 +64,9 @@ jobs:
       SONOBUOY_VER: v0.57.5
       KUBELET_VOLUMES_PATH: ${{ github.workspace }}/rusternetes/.rusternetes/volumes
       CONTAINER_RUNTIME: podman
+      # podman compose shells out to docker-compose, which needs DOCKER_HOST
+      # to find the rootful podman socket (systemctl enable podman.socket).
+      DOCKER_HOST: unix:///run/podman/podman.sock
 
     steps:
       - name: Checkout (with rusternetes submodule)
