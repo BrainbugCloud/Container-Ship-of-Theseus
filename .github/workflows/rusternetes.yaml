@@ -67,7 +67,14 @@ jobs:
         run: |
           # Save all rusternetes-* images plus the etcd base image
           # Must use sudo — images were built with sudo (rootful podman store)
-          images=$(sudo podman images --format '{{.Repository}}:{{.Tag}}' | grep -E '^rusternetes-|^quay.io/coreos/etcd' || true)
+          # podman may store short names as localhost/rusternetes-* or
+          # docker.io/library/rusternetes-*, so match anywhere in the repository.
+          images=$(sudo podman images --format '{{.Repository}}:{{.Tag}}' | grep -E '(rusternetes-|quay.io/coreos/etcd)' || true)
+          if [ -z "$images" ]; then
+            echo "No rusternetes images found! Listing all images for debugging:"
+            sudo podman images
+            exit 1
+          fi
           echo "Saving images: $images"
           sudo podman save -o /tmp/rusternetes-images.tar $images
           sudo chmod 644 /tmp/rusternetes-images.tar
