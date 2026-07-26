@@ -221,7 +221,17 @@ jobs:
         if: always()
         working-directory: rusternetes
         run: |
-          sudo podman compose -f compose.yml logs > ../cluster-logs.txt 2>&1 || true
+          # Use `podman logs` per-container rather than `compose logs` — compose
+          # needs KUBELET_VOLUMES_PATH set to interpolate volume mounts, and an
+          # empty value here causes "invalid spec: ::rw: empty section between
+          # colons", silently swallowing the actual container output.
+          for c in rusternetes-etcd rusternetes-api-server rusternetes-scheduler \
+                   rusternetes-controller-manager rusternetes-kubelet \
+                   rusternetes-kubelet2 rusternetes-kube-proxy; do
+            echo "===== $c =====" >> ../cluster-logs.txt
+            sudo podman logs "$c" >> ../cluster-logs.txt 2>&1 || true
+            echo "" >> ../cluster-logs.txt
+          done
           sudo podman ps -a >> ../cluster-logs.txt 2>&1 || true
 
       - name: Upload results
