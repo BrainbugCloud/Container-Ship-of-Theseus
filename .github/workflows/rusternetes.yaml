@@ -158,9 +158,13 @@ jobs:
           curl -sSL "https://github.com/vmware-tanzu/sonobuoy/releases/download/${SONOBUOY_VER}/sonobuoy_${SONOBUOY_VER#v}_linux_amd64.tar.gz" | sudo tar xz -C /usr/local/bin sonobuoy
           sonobuoy version --short
 
-      - name: Create network + generate certs
+      - name: Generate certs
         run: |
-          sudo podman network create rusternetes-network 2>/dev/null || true
+          # Note: do NOT pre-create rusternetes-network here. compose.yml already
+          # declares it (name: rusternetes-network) as a non-external network, so
+          # if it already exists without compose's own labels, `podman compose up`
+          # refuses to reuse it: "network ... was not created by compose" /
+          # "incorrect label com.docker.compose.network". Let compose create it.
           cd rusternetes && bash scripts/generate-certs.sh
 
       - name: Start rusternetes cluster
