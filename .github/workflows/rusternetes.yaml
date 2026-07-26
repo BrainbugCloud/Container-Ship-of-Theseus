@@ -19,7 +19,7 @@ jobs:
   build:
     name: Build rusternetes
     runs-on: ubuntu-latest
-    timeout-minutes: 120
+    timeout-minutes: 180
     env:
       DOCKER_HOST: unix:///run/podman/podman.sock
     steps:
