@@ -60,7 +60,14 @@ jobs:
         run: |
           export KUBELET_VOLUMES_PATH=${{ github.workspace }}/rusternetes/.rusternetes/volumes
           mkdir -p "$KUBELET_VOLUMES_PATH"
-          sudo -E podman compose -f compose.yml build
+          # podman's classic (non-BuildKit) build API cannot safely service
+          # concurrent builds — docker-compose v2 (the "podman compose"
+          # provider here is actually /usr/libexec/docker/cli-plugins/docker-compose
+          # over the podman socket) defaults to unlimited parallel builds,
+          # which caused all 6 service images to collapse onto the same
+          # underlying image config (every non-kubelet container ended up
+          # running the kubelet binary). Force sequential builds.
+          sudo -E podman compose --parallel 1 -f compose.yml build
 
       - name: Save container images to tarball
         if: steps.image-cache.outputs.cache-hit != 'true'
