@@ -60,14 +60,28 @@ jobs:
         run: |
           export KUBELET_VOLUMES_PATH=${{ github.workspace }}/rusternetes/.rusternetes/volumes
           mkdir -p "$KUBELET_VOLUMES_PATH"
-          # podman's classic (non-BuildKit) build API cannot safely service
-          # concurrent builds — docker-compose v2 (the "podman compose"
-          # provider here is actually /usr/libexec/docker/cli-plugins/docker-compose
-          # over the podman socket) defaults to unlimited parallel builds,
-          # which caused all 6 service images to collapse onto the same
-          # underlying image config (every non-kubelet container ended up
-          # running the kubelet binary). Force sequential builds.
-          sudo -E podman compose --parallel 1 -f compose.yml build
+          # Do NOT use 'podman compose build'. The "podman compose" provider
+          # here is actually docker-compose v2 (/usr/libexec/docker/cli-plugins/
+          # docker-compose) talking to podman over its Docker-API-compat
+          # socket. That translation layer has a tag-resolution bug: even with
+          # --parallel 1 (sequential builds, each with a genuinely distinct
+          # 'Successfully built <hash>'), it ends up re-pointing every
+          # service's short tag at the LAST image built — so all 6 containers
+          # silently ran the same binary (whichever service built last).
+          # Building directly with 'podman build' bypasses that bridge and
+          # tags each image correctly. compose.yml has no per-service 'image:'
+          # field, so compose (and thus the containers it starts) expects the
+          # implicit tag '<project>-<service>:latest' where project = the
+          # directory name ('rusternetes').
+          set -e
+          for svc in api-server scheduler controller-manager kubelet kube-proxy; do
+            echo "=== Building rusternetes-${svc} ==="
+            sudo podman build -f "Dockerfile.${svc}" -t "rusternetes-${svc}:latest" .
+          done
+          # kubelet2 shares Dockerfile.kubelet but needs its own tag
+          sudo podman tag rusternetes-kubelet:latest rusternetes-kubelet2:latest
+          echo "=== Built images ==="
+          sudo podman images | grep rusternetes
 
       - name: Save container images to tarball
         if: steps.image-cache.outputs.cache-hit != 'true'
