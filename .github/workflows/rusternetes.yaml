@@ -133,7 +133,7 @@ jobs:
           export KUBELET_VOLUMES_PATH=${{ github.workspace }}/rusternetes/.rusternetes/volumes
           mkdir -p "$KUBELET_VOLUMES_PATH"
           # Images pre-built in build job — no --build needed
-          sudo -E docker compose -f compose.yml up -d
+          sudo -E docker compose -f docker-compose.yml up -d
 
       - name: Wait for API server
         timeout-minutes: 5
