@@ -180,6 +180,21 @@ jobs:
           echo "=== Events in kube-system ==="
           kubectl get events -n kube-system --sort-by='.lastTimestamp' | tail -20
 
+      - name: Pre-Sonobuoy diagnostics
+        run: |
+          export KUBECONFIG=~/rk-kubeconfig
+          echo "=== Pods (all namespaces) ==="
+          kubectl get pods -A -o wide
+          echo ""
+          echo "=== Nodes ==="
+          kubectl describe nodes 2>&1 || true
+          echo ""
+          echo "=== Docker container stats ==="
+          sudo docker stats --no-stream 2>&1 || true
+          echo ""
+          echo "=== Docker ps ==="
+          sudo docker ps -a 2>&1 || true
+
       - name: Run Sonobuoy (${{ inputs.mode }})
         env:
           SONOBUOY_MODE: ${{ inputs.mode == 'quick' && 'quick' || 'certified-conformance' }}
@@ -210,7 +225,7 @@ jobs:
         run: |
           for c in rusternetes-etcd rusternetes-api-server rusternetes-scheduler \
                    rusternetes-controller-manager rusternetes-kubelet \
-                   rusternetes-kubelet2 rusternetes-kube-proxy; do
+                   rusternetes-kube-proxy; do
             echo "===== $c =====" >> ../cluster-logs.txt
             sudo docker logs "$c" >> ../cluster-logs.txt 2>&1 || true
             echo "" >> ../cluster-logs.txt
@@ -239,5 +254,5 @@ jobs:
         if: always()
         working-directory: rusternetes
         run: |
-          sudo docker compose -f compose.yml down -v 2>/dev/null || true
+          sudo docker compose -f docker-compose.yml down -v 2>/dev/null || true
           sudo docker network rm rusternetes-network 2>/dev/null || true
