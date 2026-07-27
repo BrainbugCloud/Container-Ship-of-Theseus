@@ -21,7 +21,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 180
     env:
-      DOCKER_HOST: unix:///run/podman/podman.sock
+      DOCKER_HOST: unix:///var/run/docker.sock
     steps:
       - name: Checkout (with rusternetes submodule)
         uses: actions/checkout@v4
@@ -34,16 +34,6 @@ jobs:
       - name: Get rusternetes submodule SHA
         id: submodule-sha
         run: echo "sha=$(git -C rusternetes rev-parse HEAD)" >> "$GITHUB_OUTPUT"
-
-      - name: Install podman
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y podman podman-compose
-          # Rootful podman socket — required for privileged kubelet containers
-          sudo mkdir -p /etc/systemd/system/podman.socket.d
-          printf '[Socket]\nSocketMode=0666\n' | sudo tee /etc/systemd/system/podman.socket.d/override.conf
-          sudo systemctl daemon-reload
-          sudo systemctl enable --now podman.socket
 
       - name: Cache container images by submodule SHA
         id: image-cache
@@ -60,10 +50,7 @@ jobs:
         run: |
           export KUBELET_VOLUMES_PATH=${{ github.workspace }}/rusternetes/.rusternetes/volumes
           mkdir -p "$KUBELET_VOLUMES_PATH"
-          # Use 'docker build' instead of 'podman build'. The docker builder
-          # correctly tags each service's image independently, avoiding the
-          # podman tag-resolution bug that collapsed all 6 services onto one
-          # image (all containers ran the same binary).
+          # Use 'docker build' — correctly tags each service's image independently.
           set -e
           for svc in api-server scheduler controller-manager kubelet kube-proxy; do
             echo "=== Building rusternetes-${svc} ==="
@@ -78,17 +65,14 @@ jobs:
         if: steps.image-cache.outputs.cache-hit != 'true'
         run: |
           # Save all rusternetes-* images plus the etcd base image
-          # Must use sudo — images were built with sudo (rootful podman store)
-          # podman may store short names as localhost/rusternetes-* or
-          # docker.io/library/rusternetes-*, so match anywhere in the repository.
-          images=$(sudo podman images --format '{{.Repository}}:{{.Tag}}' | grep -E '(rusternetes-|quay.io/coreos/etcd)' || true)
+          images=$(sudo docker images --format '{{.Repository}}:{{.Tag}}' | grep -E '(rusternetes-|quay.io/coreos/etcd)' || true)
           if [ -z "$images" ]; then
             echo "No rusternetes images found! Listing all images for debugging:"
-            sudo podman images
+            sudo docker images
             exit 1
           fi
           echo "Saving images: $images"
-          sudo podman save -o /tmp/rusternetes-images.tar $images
+          sudo docker save -o /tmp/rusternetes-images.tar $images
           sudo chmod 644 /tmp/rusternetes-images.tar
           ls -lh /tmp/rusternetes-images.tar
 
@@ -108,10 +92,8 @@ jobs:
       K8S_VERSION: v1.36.1
       SONOBUOY_VER: v0.57.5
       KUBELET_VOLUMES_PATH: ${{ github.workspace }}/rusternetes/.rusternetes/volumes
-      CONTAINER_RUNTIME: podman
-      # podman compose shells out to docker-compose, which needs DOCKER_HOST
-      # to find the rootful podman socket (systemctl enable podman.socket).
-      DOCKER_HOST: unix:///run/podman/podman.sock
+      CONTAINER_RUNTIME: docker
+      DOCKER_HOST: unix:///var/run/docker.sock
 
     steps:
       - name: Checkout (with rusternetes submodule)
@@ -127,37 +109,8 @@ jobs:
 
       - name: Load container images
         run: |
-          sudo podman load -i /tmp/rusternetes-images.tar
-          sudo podman images | grep rusternetes
-
-      - name: Install podman + tools
-        env:
-          CRICTL_VER: v1.36.0
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y podman podman-compose
-          # crictl is not in Ubuntu apt repos — install from cri-tools GitHub release
-          curl -sSL "https://github.com/kubernetes-sigs/cri-tools/releases/download/${CRICTL_VER}/crictl-${CRICTL_VER}-linux-amd64.tar.gz" \
-            | sudo tar xz -C /usr/local/bin crictl
-          crictl --version
-          # podman socket for bollard (Docker API compat)
-          # Use a systemd drop-in so the socket is world-accessible — chmod after
-          # systemctl start races with socket activation and gets reset.
-          sudo mkdir -p /etc/systemd/system/podman.socket.d
-          printf '[Socket]\nSocketMode=0666\nDirectoryMode=0777\n' | sudo tee /etc/systemd/system/podman.socket.d/override.conf
-          sudo systemctl daemon-reload
-          sudo systemctl enable --now podman.socket
-          # Debug: show socket status and file
-          echo "=== systemctl status podman.socket ==="
-          sudo systemctl status podman.socket --no-pager || true
-          echo "=== /run/podman/ contents ==="
-          ls -la /run/podman/ 2>&1 || true
-          echo "=== socket file info ==="
-          stat /run/podman/podman.sock 2>&1 || true
-          # Verify socket works with podman CLI (not curl — curl gives misleading
-          # "port 80" errors when the unix socket is missing)
-          echo "=== podman info via socket ==="
-          podman --url unix:///run/podman/podman.sock info 2>&1 | head -20 || true
+          sudo docker load -i /tmp/rusternetes-images.tar
+          sudo docker images | grep rusternetes
 
       - name: Install kubectl
         run: |
@@ -172,11 +125,6 @@ jobs:
 
       - name: Generate certs
         run: |
-          # Note: do NOT pre-create rusternetes-network here. compose.yml already
-          # declares it (name: rusternetes-network) as a non-external network, so
-          # if it already exists without compose's own labels, `podman compose up`
-          # refuses to reuse it: "network ... was not created by compose" /
-          # "incorrect label com.docker.compose.network". Let compose create it.
           cd rusternetes && bash scripts/generate-certs.sh
 
       - name: Start rusternetes cluster
@@ -185,16 +133,12 @@ jobs:
           export KUBELET_VOLUMES_PATH=${{ github.workspace }}/rusternetes/.rusternetes/volumes
           mkdir -p "$KUBELET_VOLUMES_PATH"
           # Images pre-built in build job — no --build needed
-          sudo -E podman compose -f compose.yml up -d
+          sudo -E docker compose -f compose.yml up -d
 
       - name: Wait for API server
         timeout-minutes: 5
         run: |
           for i in $(seq 1 60); do
-            # --max-time is critical: without it, a stalled TLS handshake can
-            # hang curl indefinitely, silently turning this 2-minute retry
-            # loop into an hour-long hang that only ends when the job's
-            # overall timeout-minutes kills it (as happened in practice).
             code=$(curl -sk --max-time 3 -o /dev/null -w '%{http_code}' https://127.0.0.1:6443/healthz || echo 000)
             [ "$code" = "200" ] && break
             echo "Waiting for API server... ($i/60) status=$code"
@@ -202,16 +146,16 @@ jobs:
           done
           if [ "$code" != "200" ]; then
             echo "API server never became healthy"
-            echo "=== podman ps -a ==="
-            sudo podman ps -a || true
+            echo "=== docker ps -a ==="
+            sudo docker ps -a || true
             echo "=== rusternetes-api-server logs ==="
-            sudo podman logs rusternetes-api-server 2>&1 || true
+            sudo docker logs rusternetes-api-server 2>&1 || true
             exit 1
           fi
 
       - name: Bootstrap cluster
         run: |
-          cd rusternetes && bash scripts/bootstrap-cluster.sh podman
+          cd rusternetes && bash scripts/bootstrap-cluster.sh docker
           kubectl --insecure-skip-tls-verify --server https://127.0.0.1:6443 get nodes
           kubectl --insecure-skip-tls-verify --server https://127.0.0.1:6443 get pods -A
 
@@ -245,18 +189,14 @@ jobs:
         if: always()
         working-directory: rusternetes
         run: |
-          # Use `podman logs` per-container rather than `compose logs` — compose
-          # needs KUBELET_VOLUMES_PATH set to interpolate volume mounts, and an
-          # empty value here causes "invalid spec: ::rw: empty section between
-          # colons", silently swallowing the actual container output.
           for c in rusternetes-etcd rusternetes-api-server rusternetes-scheduler \
                    rusternetes-controller-manager rusternetes-kubelet \
                    rusternetes-kubelet2 rusternetes-kube-proxy; do
             echo "===== $c =====" >> ../cluster-logs.txt
-            sudo podman logs "$c" >> ../cluster-logs.txt 2>&1 || true
+            sudo docker logs "$c" >> ../cluster-logs.txt 2>&1 || true
             echo "" >> ../cluster-logs.txt
           done
-          sudo podman ps -a >> ../cluster-logs.txt 2>&1 || true
+          sudo docker ps -a >> ../cluster-logs.txt 2>&1 || true
 
       - name: Upload results
         if: always()
@@ -280,5 +220,5 @@ jobs:
         if: always()
         working-directory: rusternetes
         run: |
-          sudo podman compose -f compose.yml down -v 2>/dev/null || true
-          sudo podman network rm rusternetes-network 2>/dev/null || true
+          sudo docker compose -f compose.yml down -v 2>/dev/null || true
+          sudo docker network rm rusternetes-network 2>/dev/null || true
