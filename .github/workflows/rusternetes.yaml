@@ -153,18 +153,23 @@ jobs:
             exit 1
           fi
 
+      - name: Create kubeconfig for bootstrap
+        run: |
+          echo -n 'YXBpVmVyc2lvbjogdjEKa2luZDogQ29uZmlnCmNsdXN0ZXJzOiBbe25hbWU6IHJrLCBjbHVzdGVyOiB7c2VydmVyOiAiaHR0cHM6Ly8xMjcuMC4wLjE6NjQ0MyIsIGluc2VjdXJlLXNraXAtdGxzLXZlcmlmeTogdHJ1ZX19XQpjb250ZXh0czogW3tuYW1lOiByaywgY29udGV4dDoge2NsdXN0ZXI6IHJrLCB1c2VyOiBya319XQpjdXJyZW50LWNvbnRleHQ6IHJrCnVzZXJzOiBbe25hbWU6IHJrLCB1c2VyOiB7dG9rZW46IGR1bW15fX1dCg==' | base64 -d > ~/rk-kubeconfig
+
       - name: Bootstrap cluster
         run: |
+          export KUBECONFIG=~/rk-kubeconfig
           cd rusternetes && bash scripts/bootstrap-cluster.sh docker
-          kubectl --insecure-skip-tls-verify --server https://127.0.0.1:6443 get nodes
-          kubectl --insecure-skip-tls-verify --server https://127.0.0.1:6443 get pods -A
+          kubectl get nodes
+          kubectl get pods -A
 
       - name: Run Sonobuoy (${{ inputs.mode }})
         env:
           SONOBUOY_MODE: ${{ inputs.mode == 'quick' && 'quick' || 'certified-conformance' }}
           WAIT_MINUTES: ${{ inputs.mode == 'quick' && '20' || '240' }}
         run: |
-          export KUBECONFIG=/dev/null
+          export KUBECONFIG=~/rk-kubeconfig
           K='kubectl --insecure-skip-tls-verify --server https://127.0.0.1:6443 --token dummy'
           $K create ns sonobuoy 2>/dev/null || true; sleep 2
           sonobuoy run \
