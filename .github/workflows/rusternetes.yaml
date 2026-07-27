@@ -186,8 +186,6 @@ jobs:
           WAIT_MINUTES: ${{ inputs.mode == 'quick' && '20' || '240' }}
         run: |
           export KUBECONFIG=~/rk-kubeconfig
-          K='kubectl --insecure-skip-tls-verify --server https://127.0.0.1:6443 --token dummy'
-          $K create ns sonobuoy 2>/dev/null || true; sleep 2
           sonobuoy run \
             --mode="$SONOBUOY_MODE" \
             --kubernetes-version="$K8S_VERSION" \
