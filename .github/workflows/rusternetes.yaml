@@ -182,7 +182,7 @@ jobs:
       - name: Collect results
         if: always()
         run: |
-          export KUBECONFIG=/dev/null
+          export KUBECONFIG=~/rk-kubeconfig
           sonobuoy status || true
           sonobuoy logs > sonobuoy-logs.txt 2>&1 || echo "No logs" > sonobuoy-logs.txt
           sonobuoy retrieve -f results.tar.gz || true
