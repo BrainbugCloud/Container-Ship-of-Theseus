@@ -164,6 +164,22 @@ jobs:
           kubectl get nodes
           kubectl get pods -A
 
+      - name: Diagnose CoreDNS if not running
+        if: always()
+        run: |
+          export KUBECONFIG=~/rk-kubeconfig
+          echo "=== CoreDNS pod describe ==="
+          kubectl describe pod coredns -n kube-system || echo "No coredns pod found"
+          echo ""
+          echo "=== CoreDNS logs ==="
+          kubectl logs coredns -n kube-system --tail=100 || echo "No logs available"
+          echo ""
+          echo "=== All pods in kube-system ==="
+          kubectl get pods -n kube-system -o wide
+          echo ""
+          echo "=== Events in kube-system ==="
+          kubectl get events -n kube-system --sort-by='.lastTimestamp' | tail -20
+
       - name: Run Sonobuoy (${{ inputs.mode }})
         env:
           SONOBUOY_MODE: ${{ inputs.mode == 'quick' && 'quick' || 'certified-conformance' }}
